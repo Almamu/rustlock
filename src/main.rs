@@ -123,6 +123,7 @@ struct WaylandLock {
     outputs: Vec<WlOutput>,
     screenshot_frames: Vec<Option<ZwlrScreencopyFrameV1>>,
     captured_backgrounds: Vec<Option<cairo::ImageSurface>>,
+    captured_screenshots: Vec<Option<cairo::ImageSurface>>,
     pending_screenshots: usize,
     exit: bool,
     unlocking: bool,
@@ -177,7 +178,7 @@ impl WaylandLock {
         }
         self.config = config;
 
-        // If custom image path changed, reload it
+        // screenshots take priority over custom backgrounds
         if self.config.image != old_image {
             if let Some(ref image_path) = self.config.image {
                 log::info!("Reloading custom background image from {:?}", image_path);
@@ -201,31 +202,14 @@ impl WaylandLock {
                         }
                     }
 
+                    let mut ss = Screenshot::new(surface.clone());
+                    let _ = ss.apply_effects(&self.config);
+                    let surface = ss.into_inner();
+
                     let num_outputs = self.output_state.outputs().count();
-                    let captured_backgrounds = vec![Some(surface); num_outputs];
-                    self.captured_backgrounds = vec![None; num_outputs];
-
-                    // Re-process backgrounds with new effects
-                    for (i, original) in captured_backgrounds.iter().enumerate() {
-                        if let Some(surface) = original {
-                            let mut ss = Screenshot::new(surface.clone());
-                            let _ = ss.apply_effects(&self.config);
-                            let processed = ss.into_inner();
-
-                            if i < captured_backgrounds.len() {
-                                self.captured_backgrounds[i] = Some(processed.clone());
-                            } else {
-                                self.captured_backgrounds.push(Some(processed.clone()));
-                            }
-
-                            // Update existing surfaces in lock manager
-                            if let Ok(mut lm) = self.lock_manager.lock() {
-                                if let Some(ls) = lm.get_surface_mut(i) {
-                                    ls.set_background(processed);
-                                }
-                            }
-                        }
-                    }
+                    self.captured_backgrounds = vec![Some(surface); num_outputs];
+                } else {
+                    log::error!("Failed to load custom background image from {:?}", image_path);
                 }
             } else if old_image.is_some() {
                 // Image removed, maybe enable screenshots?
@@ -409,7 +393,7 @@ impl SessionLockHandler for WaylandLock {
                 let output_idx = self.outputs.iter().position(|o| Proxy::id(o) == output_id);
 
                 if let Some(idx) = output_idx {
-                    if let Some(bg) = self.captured_backgrounds.get(idx).and_then(|b| b.as_ref()) {
+                    if let Some(bg) = self.captured_screenshots.get(idx).or_else(||self.captured_backgrounds.get(idx)).and_then(|b| b.as_ref()) {
                         log::info!(
                             "Applying background for output {} (ID: {:?})",
                             idx,
@@ -606,8 +590,8 @@ impl Dispatch<ZwlrScreencopyFrameV1, CaptureData> for WaylandLock {
                         if let Ok(surface) = mgr.buffer_to_surface(handle, &mut pool) {
                             let mut ss = Screenshot::new(surface);
                             let _ = ss.apply_effects(&state.config);
-                            if data.output_idx < state.captured_backgrounds.len() {
-                                state.captured_backgrounds[data.output_idx] = Some(ss.into_inner());
+                            if data.output_idx < state.captured_screenshots.len() {
+                                state.captured_screenshots[data.output_idx] = Some(ss.into_inner());
                             }
                         }
                     }
@@ -701,6 +685,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         lock_surfaces: Vec::new(),
         outputs: Vec::new(),
         screenshot_frames: Vec::new(),
+        captured_screenshots: Vec::new(),
         captured_backgrounds: Vec::new(),
         pending_screenshots: 0,
         exit: false,
@@ -743,9 +728,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let num_outputs = state.output_state.outputs().count();
             state.captured_backgrounds = vec![Some(surface); num_outputs];
-
-            // Disable screenshots if image was successfully loaded
-            state.config.screenshots = false;
         } else {
             log::error!(
                 "Failed to load custom background image from {:?}",
@@ -860,7 +842,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.outputs.len()
         );
         state.screenshot_frames = vec![None; state.outputs.len()];
-        state.captured_backgrounds = vec![None; state.outputs.len()];
+        state.captured_screenshots = vec![None; state.outputs.len()];
         state.pending_screenshots = state.outputs.len();
 
         for (i, output) in state.outputs.iter().enumerate() {
