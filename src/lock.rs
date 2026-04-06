@@ -201,9 +201,9 @@ impl LockedSurface {
         self.renderer.system_status = status;
     }
 
-    pub fn update_config(&mut self, config: Config) {
+    pub fn update_config(&mut self, config: &Config) {
         self.config = config.clone();
-        self.renderer.config = config;
+        self.renderer.config = config.clone();
         self.renderer.load_icons();
         self.background_applied = false;
     }
@@ -269,10 +269,10 @@ impl LockManager {
         action
     }
 
-    pub fn update_config(&mut self, config: Config) {
+    pub fn update_config(&mut self, config: &Config) {
         self.config = config.clone();
         for surface in &mut self.surfaces {
-            surface.update_config(config.clone());
+            surface.update_config(&self.config);
         }
     }
 

@@ -174,11 +174,14 @@ impl WaylandLock {
         let old_image = self.config.image.clone();
 
         if let Ok(mut lm) = self.lock_manager.lock() {
-            lm.update_config(config.clone());
+            lm.update_config(&config);
         }
+
+        log::debug!("Updating configuration with new settings: {:?}", config);
+        log::debug!("Previous settings were: {:?}", self.config);
+
         self.config = config;
 
-        // screenshots take priority over custom backgrounds
         if self.config.image != old_image {
             if let Some(ref image_path) = self.config.image {
                 log::info!("Reloading custom background image from {:?}", image_path);
@@ -202,7 +205,7 @@ impl WaylandLock {
                         }
                     }
 
-                    let mut ss = Screenshot::new(surface.clone());
+                    let mut ss = Screenshot::new(surface);
                     let _ = ss.apply_effects(&self.config);
                     let surface = ss.into_inner();
 
@@ -212,8 +215,8 @@ impl WaylandLock {
                     log::error!("Failed to load custom background image from {:?}", image_path);
                 }
             } else if old_image.is_some() {
-                // Image removed, maybe enable screenshots?
-                self.captured_backgrounds.clear();
+                let num_outputs = self.output_state.outputs().count();
+                self.captured_backgrounds = vec![None; num_outputs];
             }
         }
     }
@@ -768,9 +771,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         })?;
-
-        // watch the original path and if it's a symlink, watch the target as well
-        watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
 
         if let Ok(target) = std::fs::canonicalize(&config_path) {
             watcher.watch(&target, RecursiveMode::NonRecursive)?;
