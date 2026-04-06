@@ -37,6 +37,7 @@ bytemuck = "1.14"
 calloop = "0.13"
 xkbcommon = "0.7"
 calloop-wayland-source = "0.3"
+notify = "6.1"
 
 [features]
 default = ["networking"]

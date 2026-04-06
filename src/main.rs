@@ -25,6 +25,8 @@ use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::{
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 use zeroize::Zeroizing;
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+
 use smithay_client_toolkit::reexports::calloop::{self, EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 
@@ -129,6 +131,7 @@ struct WaylandLock {
     system_manager: Arc<SystemManager>,
     modifiers: Modifiers,
     current_layout: u32,
+    config_watcher: Option<RecommendedWatcher>
 }
 
 impl WaylandLock {
@@ -164,6 +167,71 @@ impl WaylandLock {
             }
         }
         (1920, 1080)
+    }
+
+    pub fn update_config(&mut self, config: Config) {
+        let old_image = self.config.image.clone();
+
+        if let Ok(mut lm) = self.lock_manager.lock() {
+            lm.update_config(config.clone());
+        }
+        self.config = config;
+
+        // If custom image path changed, reload it
+        if self.config.image != old_image {
+            if let Some(ref image_path) = self.config.image {
+                log::info!("Reloading custom background image from {:?}", image_path);
+                if let Ok(img) = image::open(image_path) {
+                    let img = img.to_rgba8();
+                    let (w, h) = img.dimensions();
+                    let mut surface =
+                        cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32)
+                            .unwrap();
+                    {
+                        let mut surface_data = surface.data().unwrap();
+                        for y in 0..h {
+                            for x in 0..w {
+                                let pixel = img.get_pixel(x, y);
+                                let idx = ((y * w + x) * 4) as usize;
+                                surface_data[idx] = pixel[2]; // B
+                                surface_data[idx + 1] = pixel[1]; // G
+                                surface_data[idx + 2] = pixel[0]; // R
+                                surface_data[idx + 3] = pixel[3]; // A
+                            }
+                        }
+                    }
+
+                    let num_outputs = self.output_state.outputs().count();
+                    let captured_backgrounds = vec![Some(surface); num_outputs];
+                    self.captured_backgrounds = vec![None; num_outputs];
+
+                    // Re-process backgrounds with new effects
+                    for (i, original) in captured_backgrounds.iter().enumerate() {
+                        if let Some(surface) = original {
+                            let mut ss = Screenshot::new(surface.clone());
+                            let _ = ss.apply_effects(&self.config);
+                            let processed = ss.into_inner();
+
+                            if i < captured_backgrounds.len() {
+                                self.captured_backgrounds[i] = Some(processed.clone());
+                            } else {
+                                self.captured_backgrounds.push(Some(processed.clone()));
+                            }
+
+                            // Update existing surfaces in lock manager
+                            if let Ok(mut lm) = self.lock_manager.lock() {
+                                if let Some(ls) = lm.get_surface_mut(i) {
+                                    ls.set_background(processed);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if old_image.is_some() {
+                // Image removed, maybe enable screenshots?
+                self.captured_backgrounds.clear();
+            }
+        }
     }
 
     fn handle_key_event(&mut self, event: KeyEvent) {
@@ -642,6 +710,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         system_manager: system_manager.clone(),
         modifiers: Modifiers::default(),
         current_layout: 0,
+        config_watcher: None,
     };
 
     event_queue.blocking_dispatch(&mut state)?;
@@ -706,6 +775,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let _wayland_source =
         WaylandSource::new(conn.clone(), event_queue).insert(event_loop.handle())?;
+
+    // Setup config file watcher
+    if let Some(config_path) = state.config.config.clone() {
+        let (tx, rx) = calloop::channel::channel();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                if event.kind.is_modify() || event.kind.is_create() {
+                    let _ = tx.send(());
+                }
+            }
+        })?;
+
+        // watch the original path and if it's a symlink, watch the target as well
+        watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
+
+        if let Ok(target) = std::fs::canonicalize(&config_path) {
+            watcher.watch(&target, RecursiveMode::NonRecursive)?;
+        }
+
+        event_loop
+            .handle()
+            .insert_source(rx, move |event, _, state| {
+                if let calloop::channel::Event::Msg(_) = event {
+                    log::info!("Configuration file changed, reloading...");
+                    let new_config = Config::load();
+                    state.update_config(new_config);
+                }
+            })?;
+
+        state.config_watcher = Some(watcher);
+    }
 
     event_loop
         .handle()

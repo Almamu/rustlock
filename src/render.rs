@@ -8,7 +8,7 @@ use crate::system::SystemStatus;
 pub struct Renderer {
     width: i32,
     height: i32,
-    config: Config,
+    pub config: Config,
     surface: ImageSurface,
     context: Context,
     fade_alpha: f64,
@@ -75,7 +75,7 @@ impl Renderer {
         renderer
     }
 
-    fn load_icons(&mut self) {
+    pub fn load_icons(&mut self) {
         if let Some(ref path) = self.config.wifi_icon {
             self.wifi_icon_surface = self.load_icon(path);
         }

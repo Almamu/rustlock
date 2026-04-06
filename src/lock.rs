@@ -200,6 +200,13 @@ impl LockedSurface {
     pub fn set_system_status(&mut self, status: SystemStatus) {
         self.renderer.system_status = status;
     }
+
+    pub fn update_config(&mut self, config: Config) {
+        self.config = config.clone();
+        self.renderer.config = config;
+        self.renderer.load_icons();
+        self.background_applied = false;
+    }
 }
 
 pub struct LockManager {
@@ -260,6 +267,13 @@ impl LockManager {
             }
         }
         action
+    }
+
+    pub fn update_config(&mut self, config: Config) {
+        self.config = config.clone();
+        for surface in &mut self.surfaces {
+            surface.update_config(config.clone());
+        }
     }
 
     pub fn set_system_status(&mut self, status: SystemStatus) {

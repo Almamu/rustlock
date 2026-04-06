@@ -152,6 +152,9 @@ impl Config {
         });
 
         if config_path.exists() {
+            // store the config path in use (as if it's not specified manually config is empty)
+            config.config = Some(config_path.clone());
+            
             if let Ok(file_content) = std::fs::read_to_string(&config_path) {
                 if let Ok(table) = toml::from_str::<toml::Table>(&file_content) {
                     log::debug!("Loaded configuration from {:?}", config_path);
